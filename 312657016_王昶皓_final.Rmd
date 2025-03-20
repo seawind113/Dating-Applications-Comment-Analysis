@@ -1,0 +1,391 @@
+---
+title: "Final Project"
+author: "Chang-Hao, Harry, Wang"
+date: "2023-12-03"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smmoth_scroll: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(tidytext)
+library(magrittr)
+library(textdata)
+library(stringr)
+library(sentimentr)
+library(ggplot2)
+library(wordcloud)
+library(patchwork)
+library(tm)
+library(cluster)
+library(fpc)
+library(caret)
+library(car)
+library(PRROC)
+library(e1071)
+library(glmnet)
+library(MASS)
+library(gt)
+```
+
+
+## Pre-process the datasets.
+```{r}
+tinder<-read.csv("C:/Users/User/Desktop/NYCU/112-1/數據科學概論/HW/tinder_google_play_reviews.csv")
+hinge<-read.csv("C:/Users/User/Desktop/NYCU/112-1/數據科學概論/HW/hinge_google_play_reviews.csv")
+
+## Extract the necessary columns for the following analysis.
+tinder<-data.frame("content"=tinder$content,"score"=tinder$score,
+                   "thumbs-up"=tinder$thumbsUpCount,
+                   "version"=tinder$reviewCreatedVersion,
+                   "time"=tinder$at)
+hinge<-data.frame("content"=hinge$content,"score"=hinge$score,
+                  "thumbs-up"=hinge$thumbsUpCount,
+                  "version"=hinge$reviewCreatedVersion,
+                  "time"=hinge$at)
+
+## Split the "at" column into three columns: year, month, and date, and then extract the comments created in 2023.
+tinder<-separate(tinder,time,c('Year','Month','Day'),'-')
+hinge<-separate(hinge,time,c('Year','Month','Day'),'-')
+tinder_2023<-tinder[tinder$Year==2023,]
+hinge_2023<-hinge[hinge$Year==2023,]
+
+## Investigate the versions in the Tinder and Hinge dataset. 
+tinder_2023$version<-as.factor(tinder_2023$version)
+hinge_2023$version<-as.factor(hinge_2023$version)
+
+summary(tinder_2023$version)
+summary(hinge_2023$version)
+
+## Assign version information to the missing values in the column of version.
+
+tinder_2023[tinder_2023$version == '',]$version<-"14.5.0"
+hinge_2023[hinge_2023$version == '',]$version<-"9.31.2"
+```
+
+
+## Perform text mining.
+```{r}
+## Split sentences into words and label their emotions.
+comment_text<-get_sentences(tinder_2023$content)
+comment_text_sentiment<-sentiment_by(comment_text)
+
+comment_text_hinge<-get_sentences(hinge_2023$content)
+comment_text_sentiment_hinge<-sentiment_by(comment_text_hinge)
+
+## Add "word_count" and "ave_sentiment" to the tinder_2023 and the hinge_2023 dataset respectively.
+tinder_2023['word_count']<-comment_text_sentiment$word_count
+tinder_2023['sentiment_scores']<-comment_text_sentiment$ave_sentiment
+
+hinge_2023['word_count']<-comment_text_sentiment_hinge$word_count
+hinge_2023['sentiment_scores']<-
+  comment_text_sentiment_hinge$ave_sentiment
+
+summary(tinder_2023$word_count)
+summary(hinge_2023$word_count)
+
+## Categorize the sentiment scores into two categories - 1 for positive and 0 for negative.
+tinder_2023['emotion']<-tinder_2023$sentiment_scores
+tinder_2023[tinder_2023$sentiment_scores >=0,]$emotion<-'1'
+tinder_2023[tinder_2023$sentiment_scores <0,]$emotion<-'0'
+tinder_2023$emotion<-as.factor(tinder_2023$emotion)
+summary(tinder_2023$emotion)
+ggplot(data = tinder_2023,aes(x=emotion, fill=emotion))+
+  geom_bar()+
+  geom_text(stat = "count", aes(label = after_stat(count)),
+            vjust = 1.6, size = 5.5, color = "white")
+ 
+ 
+hinge_2023['emotion']<-hinge_2023$sentiment_scores
+hinge_2023[hinge_2023$sentiment_scores >=0,]$emotion<-'1'
+hinge_2023[hinge_2023$sentiment_scores <0,]$emotion<-'0'
+hinge_2023$emotion<-as.factor(hinge_2023$emotion)
+ggplot(data = hinge_2023,aes(x=emotion, fill=emotion))+
+  geom_bar()+
+  geom_text(stat = "count", aes(label = after_stat(count)),
+            vjust = 1.6, size = 5.5, color = "white")
+```
+
+
+```{r}
+## Investigate word frequency in the two datasets.
+
+### Tinder
+text<-tinder_2023$content
+text_df <- tibble(line = 1:38105, text = text)
+text_df %>% unnest_tokens(word, text)
+
+data("stop_words")
+
+text_df_2<-text_df %>% unnest_tokens(word, text) %>%
+  anti_join(stop_words)
+text_df_2 %>% count(word, sort = TRUE)
+bing_word_counts <- text_df_2 %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+sent<- data.frame(table(bing_word_counts$sentiment))
+fig1<- ggplot(data=sent,aes(x=Var1,y=Freq))+
+  geom_col()+
+  geom_text(aes(label = Freq), vjust = 1.6, size = 5.5, color = "white")+labs(x= "Group" , y = "Freq")
+
+fig2<- ggplot(data=head(bing_word_counts,5),
+              aes(x=reorder(word,-n),y=n))+
+  geom_col()+
+  geom_text(aes(label = n), vjust = 1.6, size = 3.5, color = "white")+
+  labs(x= "Word" , y = "Freq")+
+  theme(axis.text.x = element_text(angle=45,hjust=1,size=15.0))
+
+(fig1 + fig2)
+
+#### Word cloud
+txt_freq <- data.frame(table(text_df_2$word))
+wordcloud(words = txt_freq$Var1, freq = txt_freq$Freq, 
+             min.freq = 1,max.words=200, random.order=FALSE,
+             rot.per=0.35,colors=brewer.pal(8, "Dark2"))
+
+
+### Hinge
+text_h<-hinge_2023$content
+text_df_h <- tibble(line = 1:7327, text = text_h)
+text_df_h %>% unnest_tokens(word, text)
+
+data("stop_words")
+
+text_df_2_h<-text_df_h %>% unnest_tokens(word, text) %>%
+  anti_join(stop_words)
+text_df_2_h %>% count(word, sort = TRUE)
+bing_word_counts_h <- text_df_2_h %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+sent_h<- data.frame(table(bing_word_counts_h$sentiment))
+fig3<- ggplot(data=sent_h,aes(x=Var1,y=Freq))+
+  geom_col()+
+  geom_text(aes(label = Freq), vjust = 1.6, size = 5.5, color = "white")+labs(x= "Group" , y = "Freq")
+
+fig4<- ggplot(data=head(bing_word_counts_h,5),
+              aes(x=reorder(word,-n),y=n))+
+  geom_col()+
+  geom_text(aes(label = n), vjust = 1.6, size = 3.5, color = "white")+
+  labs(x= "Word" , y = "Freq")+
+  theme(axis.text.x = element_text(angle=45,hjust=1,size=15.0))
+
+(fig3 + fig4)
+
+
+#### Word cloud
+txt_freq_h <- data.frame(table(text_df_2_h$word))
+wordcloud(words = txt_freq_h$Var1, freq = txt_freq_h$Freq, 
+              min.freq = 1,max.words=200, random.order=FALSE,
+              rot.per=0.35,colors=brewer.pal(8, "Dark2"))
+
+
+```
+
+
+## Employ multiple linear regression
+```{r}
+## Extrace the information about version
+tinder_2023<-separate(tinder_2023,version,c('main','sub'))
+hinge_2023<-separate(hinge_2023,version,c('main','sub'))
+
+tinder_2023['ver']<-tinder_2023$main
+tinder_2023[tinder_2023$main == 14,]$ver<-1 ## Newest ver.
+tinder_2023[tinder_2023$main != 14,]$ver<-0 ## Older ver.
+tinder_2023$ver<-as.factor(tinder_2023$ver)
+
+hinge_2023['ver']<-hinge_2023$main
+hinge_2023[hinge_2023$main == 9,]$ver<-1 ## Newest ver.
+hinge_2023[hinge_2023$main != 9,]$ver<-0 ## Older ver.
+hinge_2023$ver<-as.factor(hinge_2023$ver)
+
+## Tinder
+training.samples <- tinder_2023$sentiment_scores %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data  <- tinder_2023[training.samples,]
+test.data <- tinder_2023[-training.samples,]
+model <- lm(sentiment_scores ~ word_count + ver, data = train.data)
+summary(model)
+plot(test.data$word_count,test.data$sentiment_scores)
+abline(model)
+MSE<-mean((test.data$sentiment_scores - predict.lm(model, test.data)) ^ 2)
+MSE
+
+## Hinge
+training.samples <- hinge_2023$sentiment_scores %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data  <- hinge_2023[training.samples,]
+test.data <- hinge_2023[-training.samples,]
+model <- lm(sentiment_scores ~ word_count + ver, data = train.data)
+summary(model)
+plot(test.data$word_count,test.data$sentiment_scores)
+abline(model)
+MSE_h<-mean((test.data$sentiment_scores - predict.lm(model, test.data)) ^ 2)
+MSE_h
+```
+
+
+## Classify the emotions with different models.
+### Multiple Logistic Model
+```{r}
+## Tinder
+training.samples<-tinder_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data<-tinder_2023[training.samples,]
+test.data<-tinder_2023[-training.samples,]
+
+model1<-glm(formula = emotion ~ word_count + score,
+            data=train.data, family=binomial(link="logit"))
+
+summary(model1)
+
+prob=predict(model1,test.data,type="response")
+
+label=rep('',length(prob))
+label[prob<0.5]='0'
+label[prob>=0.5]='1'
+
+tab=table(label,test.data$emotion)
+tab
+
+accuracy_1<-sum(diag(tab))/sum(tab)
+
+## Hinge
+training.samples<-hinge_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data<-hinge_2023[training.samples,]
+test.data<-hinge_2023[-training.samples,]
+
+model1<-glm(formula = emotion ~ word_count + score,
+            data=train.data, family=binomial(link="logit"))
+
+summary(model1)
+
+prob=predict(model1,test.data,type="response")
+
+label=rep('',length(prob))
+label[prob<0.5]='0'
+label[prob>=0.5]='1'
+
+tab=table(label,test.data$emotion)
+tab
+
+accuracy_1_h<-sum(diag(tab))/sum(tab)
+```
+
+
+### Linear Discriminant Analysis
+```{r}
+## Tinder
+training.samples<-tinder_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data_2<-tinder_2023[training.samples,]
+test.data_2<-tinder_2023[-training.samples,]
+model2<-lda(emotion ~ word_count + score, prior=c(1,1)/2, data = train.data_2)
+label<-predict(model2,test.data_2)$class
+tab<-table(predict=label,real=test.data_2$emotion)
+tab
+accuracy_2<-sum(diag(tab))/sum(tab)
+accuracy_2
+
+## Hinge
+training.samples<-hinge_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data_2<-hinge_2023[training.samples,]
+test.data_2<-hinge_2023[-training.samples,]
+model2<-lda(emotion ~ word_count + score, prior=c(1,1)/2, data = train.data_2)
+label<-predict(model2,test.data_2)$class
+tab<-table(predict=label,real=test.data_2$emotion)
+tab
+accuracy_2_h<-sum(diag(tab))/sum(tab)
+accuracy_2_h
+```
+
+
+### Quadratic Discriminant Analysis
+```{r}
+## Tinder
+training.samples<-tinder_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data_3<-tinder_2023[training.samples,]
+test.data_3<-tinder_2023[-training.samples,]
+model3<-qda(emotion ~ word_count + score, prior=c(1,1)/2, data = train.data_3)
+label<-predict(model3,test.data_3)$class
+tab<-table(predict=label,real=test.data_3$emotion)
+tab
+accuracy_3<-sum(diag(tab))/sum(tab)
+
+## Hinge
+training.samples<-hinge_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data_3<-hinge_2023[training.samples,]
+test.data_3<-hinge_2023[-training.samples,]
+model3<-qda(emotion ~ word_count + score, prior=c(1,1)/2, data = train.data_3)
+label<-predict(model3,test.data_3)$class
+tab<-table(predict=label,real=test.data_3$emotion)
+tab
+accuracy_3_h<-sum(diag(tab))/sum(tab)
+```
+
+
+### Naive Bayes 
+```{r}
+## Tinder
+training.samples<-tinder_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data_4<-tinder_2023[training.samples,]
+test.data_4<-tinder_2023[-training.samples,]
+
+model4<-naiveBayes(emotion ~ word_count + score, data = train.data_4)
+label<-predict(model4,test.data_4)
+tab<-table(predict=label, real=test.data_4$emotion)
+tab
+accuracy_4<-sum(diag(tab))/sum(tab)
+
+## Hinge
+training.samples<-hinge_2023$emotion %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data_4<-hinge_2023[training.samples,]
+test.data_4<-hinge_2023[-training.samples,]
+
+model4<-naiveBayes(emotion ~ word_count + score, data = train.data_4)
+label<-predict(model4,test.data_4)
+tab<-table(predict=label, real=test.data_4$emotion)
+tab
+accuracy_4_h<-sum(diag(tab))/sum(tab)
+```
+
+
+### The Accuracy of the Models
+```{r}
+## Tinder
+accu<-data.frame("Model"=c("Multiple Logistic","LDA", "QDA", 
+                           "Naive Bayes"),
+                 "Accuracy"=c(accuracy_1,accuracy_2,accuracy_3,
+                              accuracy_4))
+gt(accu) %>%
+tab_header(
+    title = "Accuracy of each model (Tinder)",
+  )
+## Hinge
+accu_h<-data.frame("Model"=c("Multiple Logistic","LDA", "QDA", 
+                             "Naive Bayes"),
+                  "Accuracy"=c(accuracy_1_h,accuracy_2_h,
+                               accuracy_3_h,accuracy_4_h))
+gt(accu_h) %>%
+tab_header(
+    title = "Accuracy of each model (Hinge)",
+  )
+```
+
